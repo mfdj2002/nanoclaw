@@ -97,7 +97,11 @@ function createAdapter(): ChannelAdapter {
       if (platformId !== PLATFORM_ID) return undefined;
       const text = extractText(message);
       if (text === null) return undefined;
-      const line = JSON.stringify({ threadId: threadId ?? null, text }) + '\n';
+      // Reasoning/progress rows carry { progress: true } in content — tag them so
+      // the plugin renders a foldable "thinking" block instead of an answer.
+      const content = message.content as Record<string, unknown> | undefined;
+      const isThinking = !!content && typeof content === 'object' && content.progress === true;
+      const line = JSON.stringify({ threadId: threadId ?? null, text, kind: isThinking ? 'thinking' : 'final' }) + '\n';
       for (const c of clients) {
         try {
           c.write(line);

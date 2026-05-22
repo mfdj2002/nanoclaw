@@ -401,7 +401,7 @@ async function processQuery(
   return { continuation: queryContinuation };
 }
 
-function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
+function handleEvent(event: ProviderEvent, routing: RoutingContext): void {
   switch (event.type) {
     case 'init':
       log(`Session: ${event.continuation}`);
@@ -415,7 +415,23 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
       );
       break;
     case 'progress':
-      log(`Progress: ${event.message}`);
+      log(`Progress: ${event.message.slice(0, 200)}`);
+      // Surface reasoning/progress to the Obsidian channel as a foldable
+      // "thinking" message. Gated to obsidian so other channels don't get CoT.
+      if (routing.channelType === 'obsidian' && event.message) {
+        try {
+          writeMessageOut({
+            id: `prog-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            kind: 'chat',
+            content: JSON.stringify({ text: event.message, progress: true }),
+            platform_id: routing.platformId,
+            channel_type: routing.channelType,
+            thread_id: routing.threadId,
+          });
+        } catch (e) {
+          /* best-effort — never let progress delivery break the turn */
+        }
+      }
       break;
   }
 }

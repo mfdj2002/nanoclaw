@@ -290,6 +290,7 @@ export class OpenCodeProvider implements AgentProvider {
         }
 
         const partTextByMessageId = new Map<string, string>();
+        const reasoningByMessageId = new Map<string, string>();
         const roleByMessageId = new Map<string, string>();
         let lastEventAt = Date.now();
         let eventTimedOut = false;
@@ -330,8 +331,11 @@ export class OpenCodeProvider implements AgentProvider {
               }
               case 'message.part.updated': {
                 const part = ev.properties.part as { type?: string; messageID?: string; text?: string } | undefined;
-                if (part?.type === 'text' && part.messageID && part.text) {
-                  partTextByMessageId.set(part.messageID, part.text);
+                if (part?.messageID && part.text) {
+                  if (part.type === 'text') partTextByMessageId.set(part.messageID, part.text);
+                  // Thinking-mode (deepseek-reasoner) emits separate reasoning parts —
+                  // capture them so the agent-runner can surface the CoT.
+                  else if (part.type === 'reasoning') reasoningByMessageId.set(part.messageID, part.text);
                 }
                 break;
               }
@@ -391,11 +395,16 @@ export class OpenCodeProvider implements AgentProvider {
         }
 
         let resultText = '';
+        let reasoningText = '';
         for (const [msgId, role] of roleByMessageId) {
           if (role === 'assistant') {
             resultText = partTextByMessageId.get(msgId) ?? resultText;
+            reasoningText = reasoningByMessageId.get(msgId) ?? reasoningText;
           }
         }
+        // Emit the chain-of-thought (if any) just before the answer so the
+        // poll-loop can forward it as a foldable "thinking" message.
+        if (reasoningText) yield { type: 'progress', message: reasoningText };
         yield { type: 'result', text: resultText || null };
       }
     }

@@ -159,15 +159,29 @@ async function spawnContainer(session: Session): Promise<void> {
   activeContainers.set(session.id, { process: container, containerName });
   markContainerRunning(session.id);
 
-  // Log stderr
+  // Persist container stdout+stderr to a per-session file. Containers run --rm,
+  // so their logs (poll-loop, OpenCode events, reasoning) vanish on exit — this
+  // keeps them on disk for reviewing long autonomous runs after the fact.
+  let containerLog: fs.WriteStream | null = null;
+  try {
+    const containerLogDir = path.join(process.cwd(), 'logs', 'containers');
+    fs.mkdirSync(containerLogDir, { recursive: true });
+    containerLog = fs.createWriteStream(path.join(containerLogDir, `${agentGroup.folder}-${session.id}.log`), { flags: 'a' });
+    containerLog.write(`\n===== ${containerName} spawned ${new Date().toISOString()} =====\n`);
+  } catch (e) {
+    log.warn('Failed to open container log file (continuing)', { sessionId: session.id, err: e });
+  }
+
+  // Log stderr (host log + per-session file)
   container.stderr?.on('data', (data) => {
+    containerLog?.write(data);
     for (const line of data.toString().trim().split('\n')) {
       if (line) log.debug(line, { container: agentGroup.folder });
     }
   });
 
-  // stdout is unused in v2 (all IO is via session DB)
-  container.stdout?.on('data', () => {});
+  // stdout is otherwise unused in v2 (all IO is via session DB) — persist it.
+  container.stdout?.on('data', (data) => { containerLog?.write(data); });
 
   // No host-side idle timeout. Stale/stuck detection is driven by the host
   // sweep reading heartbeat mtime + processing_ack claim age + container_state
@@ -175,6 +189,7 @@ async function spawnContainer(session: Session): Promise<void> {
   // on a wall-clock timer.
 
   container.on('close', (code) => {
+    try { containerLog?.end(); } catch (e) { /* noop */ }
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
