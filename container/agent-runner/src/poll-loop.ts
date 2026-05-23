@@ -1,4 +1,4 @@
-import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
+import { findByName, findByRouting, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
 import { writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
@@ -475,14 +475,15 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
 
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
 
-  // Single-destination convenience: if the agent produced bare text (no <message>
-  // blocks) and there's exactly one destination, just deliver it there instead of
-  // nudging for a re-wrap — saves a round-trip and avoids re-wrap reasoning noise.
+  // Bare reply (no <message> blocks) → deliver it to the channel the message came
+  // FROM (or the sole destination). No nudge, no mis-route, no re-wrap reasoning.
+  // Wrapping is only needed to address a DIFFERENT destination than the sender.
   if (sent === 0 && scratchpad.trim()) {
     const all = getAllDestinations();
-    if (all.length === 1) {
-      sendToDestination(all[0], scratchpad.trim(), routing);
-      log(`Auto-delivered unwrapped output to sole destination "${all[0].name}"`);
+    const origin = findByRouting(routing.channelType, routing.platformId) || (all.length === 1 ? all[0] : undefined);
+    if (origin) {
+      sendToDestination(origin, scratchpad.trim(), routing);
+      log(`Auto-delivered unwrapped output to origin destination "${origin.name}"`);
       return { sent: 1, hasUnwrapped: false };
     }
   }

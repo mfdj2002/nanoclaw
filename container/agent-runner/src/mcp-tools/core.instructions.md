@@ -1,6 +1,6 @@
 ## Sending messages
 
-**Every response** must be wrapped in `<message to="name">...</message>` blocks — even if you only have one destination. Bare text outside of `<message>` blocks is scratchpad (logged but never sent). See the `## Sending messages` section in your runtime system prompt for the current destination list and names.
+**Just reply normally** — your response is delivered back to whoever messaged you, automatically. Only use a `<message to="name">...</message>` block to send something to a *different* destination than the sender (see the `## Sending messages` section for names). Wrap private scratchpad in `<internal>...</internal>` so it isn't sent.
 
 ### Mid-turn updates (`send_message`)
 

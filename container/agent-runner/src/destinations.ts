@@ -103,28 +103,28 @@ function buildDestinationsSection(): string {
   }
 
   const lines = ['## Sending messages', ''];
+
   if (all.length === 1) {
     const d = all[0];
     const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-    lines.push(`Your destination is \`${d.name}\`${label}.`);
+    lines.push(
+      `Your destination is \`${d.name}\`${label}. Just reply normally — your response is delivered there automatically; no tags needed.`,
+    );
   } else {
-    lines.push('You can send messages to the following destinations:', '');
+    lines.push(
+      'Just reply normally to answer whoever messaged you — your bare response goes back to the sender automatically. Use a `<message to="name">…</message>` block ONLY to send to a *different* destination:',
+      '',
+    );
     for (const d of all) {
       const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
       lines.push(`- \`${d.name}\`${label}`);
     }
   }
   lines.push('');
-  lines.push(
-    'Wrap each delivered message in a `<message to="name">…</message>` block; include several blocks in one response to address several destinations. `<internal>…</internal>` marks thinking you don\'t want sent.',
-  );
+  lines.push("Use `<internal>…</internal>` for private scratchpad you don't want delivered.");
   lines.push('');
   lines.push(
-    'When replying to an incoming message, default to addressing the destination it came `from` (every inbound `<message>` tag carries a `from="name"` attribute). Pick a different destination when the request asks for it (e.g., "tell Laura that…").',
-  );
-  lines.push('');
-  lines.push(
-    'The `send_message` MCP tool is the same delivery, available mid-turn — handy for a quick acknowledgment ("on it") before a slow tool call. Each `send_message` call and each final-response `<message>` block lands as its own message in the conversation, so they read as a sequence rather than as one combined reply.',
+    'The `send_message` MCP tool delivers mid-turn (e.g. a quick "on it" before a slow tool call); each call lands as its own message.',
   );
   return lines.join('\n');
 }

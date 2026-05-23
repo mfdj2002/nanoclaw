@@ -406,7 +406,7 @@ export class OpenCodeProvider implements AgentProvider {
             if (r) reasoningParts.push(r);
           }
         }
-        const reasoningText = reasoningParts.join('\n\n— — —\n\n');
+        const reasoningText = reasoningParts.join('\n\n');
         // Emit the full chain-of-thought (if any) just before the answer so the
         // poll-loop can forward it as a foldable "thinking" message.
         if (reasoningText) yield { type: 'progress', message: reasoningText };
