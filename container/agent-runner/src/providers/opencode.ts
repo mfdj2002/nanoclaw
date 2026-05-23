@@ -12,6 +12,10 @@ function log(msg: string): void {
 
 const SESSION_STATUS_RETRY_ERROR_AFTER = 3;
 
+/** Min interval between streamed chain-of-thought ("progress") emits. The host
+ * delivery poll runs at 1s, so emitting finer than this is wasted work. */
+const REASONING_STREAM_MS = 1000;
+
 /** Stale / dead OpenCode session heuristics (complement Claude-centric host patterns). */
 const STALE_SESSION_RE =
   /no conversation found|ENOENT.*\.jsonl|session.*not found|NotFoundError|connection reset|ECONNRESET|404|event timeout/i;
@@ -292,6 +296,7 @@ export class OpenCodeProvider implements AgentProvider {
         const partTextByMessageId = new Map<string, string>();
         const reasoningByMessageId = new Map<string, string>();
         const roleByMessageId = new Map<string, string>();
+        let lastReasoningEmit = 0;
         let lastEventAt = Date.now();
         let eventTimedOut = false;
         const timeoutCheck = setInterval(() => {
@@ -333,9 +338,18 @@ export class OpenCodeProvider implements AgentProvider {
                 const part = ev.properties.part as { type?: string; messageID?: string; text?: string } | undefined;
                 if (part?.messageID && part.text) {
                   if (part.type === 'text') partTextByMessageId.set(part.messageID, part.text);
-                  // Thinking-mode (deepseek-reasoner) emits separate reasoning parts —
-                  // capture them so the agent-runner can surface the CoT.
-                  else if (part.type === 'reasoning') reasoningByMessageId.set(part.messageID, part.text);
+                  // Thinking-mode emits separate reasoning parts. Capture them, and
+                  // stream the cumulative thinking-so-far (throttled to ~1/sec) so the
+                  // Obsidian plugin can render the CoT live as it fills in.
+                  else if (part.type === 'reasoning') {
+                    reasoningByMessageId.set(part.messageID, part.text);
+                    const now = Date.now();
+                    if (now - lastReasoningEmit >= REASONING_STREAM_MS) {
+                      lastReasoningEmit = now;
+                      const cumulative = [...reasoningByMessageId.values()].join('\n\n');
+                      if (cumulative) yield { type: 'progress', message: cumulative };
+                    }
+                  }
                 }
                 break;
               }
@@ -407,8 +421,9 @@ export class OpenCodeProvider implements AgentProvider {
           }
         }
         const reasoningText = reasoningParts.join('\n\n');
-        // Emit the full chain-of-thought (if any) just before the answer so the
-        // poll-loop can forward it as a foldable "thinking" message.
+        // Final, complete chain-of-thought (the plugin replaces the streamed copy
+        // with this) emitted just before the answer, so nothing is lost if the last
+        // throttled stream emit missed the tail.
         if (reasoningText) yield { type: 'progress', message: reasoningText };
         yield { type: 'result', text: resultText || null };
       }
