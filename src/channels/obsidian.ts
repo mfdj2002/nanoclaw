@@ -26,6 +26,7 @@ import { DATA_DIR } from '../config.js';
 import { log } from '../log.js';
 import type { ChannelAdapter, ChannelSetup, OutboundMessage } from './adapter.js';
 import { registerChannelAdapter } from './channel-registry.js';
+import { handleMcpControl, isMcpControl, type McpControl } from './obsidian-mcp.js';
 
 const PLATFORM_ID = 'local';
 
@@ -113,6 +114,19 @@ function createAdapter(): ChannelAdapter {
     },
   };
 
+  // Write one framed line to every live plugin connection (each demuxes by
+  // threadId). Used for control-message acks (deliver() handles outbound rows).
+  function sendLine(threadId: string | null, text: string, kind: 'final' | 'thinking' = 'final'): void {
+    const line = JSON.stringify({ threadId: threadId ?? null, text, kind }) + '\n';
+    for (const c of clients) {
+      try {
+        c.write(line);
+      } catch (err) {
+        log.warn('Failed to write to obsidian client', { err });
+      }
+    }
+  }
+
   function handleConnection(socket: net.Socket, config: ChannelSetup): void {
     clients.add(socket);
     log.info('Obsidian client connected', { clients: clients.size });
@@ -135,15 +149,28 @@ function createAdapter(): ChannelAdapter {
   }
 
   async function handleLine(line: string, config: ChannelSetup): Promise<void> {
-    let payload: { threadId?: unknown; text?: unknown };
+    let payload: { type?: unknown; threadId?: unknown; text?: unknown; server?: unknown; spec?: unknown };
     try {
       payload = JSON.parse(line);
     } catch {
       log.warn('Obsidian: ignoring non-JSON line', { line });
       return;
     }
-    if (typeof payload.text !== 'string' || payload.text.length === 0) return;
     const threadId = typeof payload.threadId === 'string' && payload.threadId.length > 0 ? payload.threadId : null;
+
+    // Control messages (connect/list/disconnect MCP) — handled host-side, acked
+    // back to the originating tab. Must run before the text-required check below.
+    if (isMcpControl(payload)) {
+      try {
+        await handleMcpControl(payload as McpControl, (text) => sendLine(threadId, text));
+      } catch (err) {
+        log.error('Obsidian: MCP control handler threw', { err });
+        sendLine(threadId, `❌ MCP 操作失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
+    if (typeof payload.text !== 'string' || payload.text.length === 0) return;
 
     try {
       await config.onInbound(PLATFORM_ID, threadId, {
