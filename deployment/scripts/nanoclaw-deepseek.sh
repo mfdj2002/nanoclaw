@@ -15,11 +15,15 @@
 #   ./nanoclaw-deepseek.sh sk-... --verify-only      # set up + one test message, no REPL
 #   ./nanoclaw-deepseek.sh --chat                     # already set up → jump straight into interactive chat (no re-setup, no key)
 #
-# Optional env: NANOCLAW_DIR (default ./nanoclaw-v2), DEEPSEEK_MODEL (default deepseek-chat),
-#               AGENT_NAME (default Andy), DISPLAY_NAME (default $USER)
+# Optional env: NANOCLAW_DIR (default: the repo this script lives in),
+#               DEEPSEEK_MODEL (default deepseek-chat), AGENT_NAME (default Andy),
+#               DISPLAY_NAME (default $USER)
 set -uo pipefail
 
-NANOCLAW_DIR="${NANOCLAW_DIR:-$HOME/cc/nanoclaw-v2}"   # absolute so it works from any cwd (e.g. the `nanoclaw` zsh fn)
+# Resolve the install dir from this script's own location (deployment/scripts/ ->
+# repo root) so it works wherever the repo is cloned — no ~/cc assumption.
+_self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NANOCLAW_DIR="${NANOCLAW_DIR:-$(cd "$_self/../.." && pwd)}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-chat}"   # deprecates 2026-07-24 → deepseek-v4-flash; switch to deepseek-v4-pro then
 AGENT_NAME="${AGENT_NAME:-Andy}"
 DISPLAY_NAME="${DISPLAY_NAME:-${USER:-you}}"

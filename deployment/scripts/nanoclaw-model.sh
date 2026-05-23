@@ -17,7 +17,11 @@
 # deepseek-v4-pro (thinking then needs a `thinking:{type:enabled}` provider param).
 set -euo pipefail
 
-DIR="${NANOCLAW_DIR:-$HOME/cc/nanoclaw-v2}"
+# Resolve the install dir from this script's own location (deployment/scripts/ ->
+# repo root) so it works wherever the repo is cloned — no ~/cc assumption.
+# Override with NANOCLAW_DIR.
+_self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIR="${NANOCLAW_DIR:-$(cd "$_self/../.." && pwd)}"
 ENV="$DIR/.env"
 export PATH="$HOME/.local/bin:$PATH"
 [ -f "$ENV" ] || { echo "No .env at $ENV — run nanoclaw-deepseek.sh first." >&2; exit 1; }

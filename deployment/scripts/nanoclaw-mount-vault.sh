@@ -19,11 +19,18 @@
 #
 set -euo pipefail
 
-DIR="${NANOCLAW_DIR:-$HOME/cc/nanoclaw-v2}"
-GROUP_ID="${NANOCLAW_GROUP_ID:-ag-1779431774034-taufoo}"   # Andy / cli-with-kite
+# Resolve the install dir from this script's own location (deployment/scripts/ ->
+# repo root) so it works wherever the repo is cloned — no ~/cc assumption.
+# Override with NANOCLAW_DIR.
+_self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DIR="${NANOCLAW_DIR:-$(cd "$_self/../.." && pwd)}"
 ALLOWLIST="$HOME/.config/nanoclaw/mount-allowlist.json"
 CONTAINER_SUBDIR="vault"                                    # → /workspace/extra/vault
 export PATH="$HOME/.local/bin:$PATH"
+# Autodetect the obsidian/CLI agent group (the cli-with-* group wire-obsidian.ts targets)
+# rather than hardcoding an install-specific id. Override with NANOCLAW_GROUP_ID.
+GROUP_ID="${NANOCLAW_GROUP_ID:-$(ncl groups list 2>/dev/null | awk '/cli-with/{print $1; exit}')}"
+[ -n "$GROUP_ID" ] || { echo "Could not find an agent group (set NANOCLAW_GROUP_ID)." >&2; exit 1; }
 
 [ -d "$DIR" ] || { echo "nanoclaw dir not found: $DIR" >&2; exit 1; }
 
