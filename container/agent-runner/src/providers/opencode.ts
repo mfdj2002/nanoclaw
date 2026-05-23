@@ -395,14 +395,19 @@ export class OpenCodeProvider implements AgentProvider {
         }
 
         let resultText = '';
-        let reasoningText = '';
+        const reasoningParts: string[] = [];
         for (const [msgId, role] of roleByMessageId) {
           if (role === 'assistant') {
+            // Final answer = the last assistant message's text.
             resultText = partTextByMessageId.get(msgId) ?? resultText;
-            reasoningText = reasoningByMessageId.get(msgId) ?? reasoningText;
+            // CoT = reasoning from EVERY step (each tool round is its own assistant
+            // message), accumulated in order — not just the final step.
+            const r = reasoningByMessageId.get(msgId);
+            if (r) reasoningParts.push(r);
           }
         }
-        // Emit the chain-of-thought (if any) just before the answer so the
+        const reasoningText = reasoningParts.join('\n\n— — —\n\n');
+        // Emit the full chain-of-thought (if any) just before the answer so the
         // poll-loop can forward it as a foldable "thinking" message.
         if (reasoningText) yield { type: 'progress', message: reasoningText };
         yield { type: 'result', text: resultText || null };

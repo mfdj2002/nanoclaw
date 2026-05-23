@@ -475,6 +475,18 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
 
   const scratchpad = stripInternalTags(scratchpadParts.join(''));
 
+  // Single-destination convenience: if the agent produced bare text (no <message>
+  // blocks) and there's exactly one destination, just deliver it there instead of
+  // nudging for a re-wrap — saves a round-trip and avoids re-wrap reasoning noise.
+  if (sent === 0 && scratchpad.trim()) {
+    const all = getAllDestinations();
+    if (all.length === 1) {
+      sendToDestination(all[0], scratchpad.trim(), routing);
+      log(`Auto-delivered unwrapped output to sole destination "${all[0].name}"`);
+      return { sent: 1, hasUnwrapped: false };
+    }
+  }
+
   if (scratchpad) {
     log(`[scratchpad] ${scratchpad.slice(0, 500)}${scratchpad.length > 500 ? '…' : ''}`);
   }
