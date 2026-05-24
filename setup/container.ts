@@ -186,6 +186,27 @@ export async function run(args: string[]): Promise<void> {
     // .env is optional; absence is normal on a fresh checkout
   }
 
+  // Build proxy (optional): if an HTTP proxy is set, pass it into the image build
+  // so the in-image apt/npm/git/GitHub fetches work behind a firewall (e.g. GFW).
+  // The build runs in Docker's VM, so a host-loopback proxy is rewritten to
+  // host.docker.internal (with --add-host so it resolves). Empty = no-op — set
+  // NANOCLAW_BUILD_PROXY (or the standard http(s)_proxy) before provisioning.
+  {
+    let proxy =
+      process.env.NANOCLAW_BUILD_PROXY ||
+      process.env.https_proxy ||
+      process.env.http_proxy ||
+      process.env.HTTPS_PROXY ||
+      process.env.HTTP_PROXY;
+    if (proxy) {
+      proxy = proxy.replace('127.0.0.1', 'host.docker.internal').replace('localhost', 'host.docker.internal');
+      for (const k of ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY']) buildArgs.push(`--build-arg ${k}=${proxy}`);
+      buildArgs.push('--build-arg no_proxy=localhost,127.0.0.1');
+      buildArgs.push('--build-arg NO_PROXY=localhost,127.0.0.1');
+      buildArgs.push('--add-host host.docker.internal:host-gateway');
+    }
+  }
+
   // Build — stdio inherit so the parent setup runner can tail docker's
   // per-step output and render it in a rolling window. Previously we used
   // execSync which buffered everything; users couldn't tell whether a

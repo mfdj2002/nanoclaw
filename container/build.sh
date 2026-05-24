@@ -32,6 +32,19 @@ if [ "${INSTALL_CJK_FONTS:-false}" = "true" ]; then
     BUILD_ARGS+=(--build-arg INSTALL_CJK_FONTS=true)
 fi
 
+# Build proxy (optional): pass an HTTP proxy into the build so the in-image
+# apt/npm/git/GitHub fetches work behind a firewall (e.g. GFW). The build runs in
+# Docker's VM, so a host-loopback proxy is rewritten to host.docker.internal (with
+# --add-host so it resolves). Set NANOCLAW_BUILD_PROXY or the standard http(s)_proxy.
+PROXY="${NANOCLAW_BUILD_PROXY:-${https_proxy:-${http_proxy:-${HTTPS_PROXY:-${HTTP_PROXY:-}}}}}"
+if [ -n "$PROXY" ]; then
+    PROXY="${PROXY//127.0.0.1/host.docker.internal}"; PROXY="${PROXY//localhost/host.docker.internal}"
+    echo "build proxy: $PROXY"
+    for k in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; do BUILD_ARGS+=(--build-arg "$k=$PROXY"); done
+    BUILD_ARGS+=(--build-arg no_proxy=localhost,127.0.0.1 --build-arg NO_PROXY=localhost,127.0.0.1)
+    BUILD_ARGS+=(--add-host "host.docker.internal:host-gateway")
+fi
+
 echo "Building NanoClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
