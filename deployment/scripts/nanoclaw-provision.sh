@@ -33,7 +33,10 @@
 set -uo pipefail   # NOT -e: errors are handled per-step by the driver
 
 # ── config ──────────────────────────────────────────────────────────────────
-NANOCLAW_DIR="${NANOCLAW_DIR:-$PWD/nanoclaw-v2}"
+# This script lives in deployment/scripts/, so the install root is two levels up.
+# Build that checkout in place — never clone a nested copy (override: NANOCLAW_DIR).
+_self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NANOCLAW_DIR="${NANOCLAW_DIR:-$(cd "$_self/../.." && pwd)}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek-chat}"
 STATE_FILE="${STATE_FILE:-$PWD/.nanoclaw-provision.state}"
 LOG_FILE="${LOG_FILE:-$PWD/nanoclaw-provision.log}"
