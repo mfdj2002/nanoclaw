@@ -27,6 +27,8 @@ export type ErrorCode =
   | 'permission-denied'
   | 'forbidden'
   | 'approval-pending'
+  /** Admin-gated command with no reachable approver — a dead end, not a wait. */
+  | 'approval-unavailable'
   | 'not-found'
   | 'handler-error'
   | 'transport-error';

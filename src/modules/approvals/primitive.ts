@@ -153,7 +153,24 @@ export interface RequestApprovalOptions {
   title: string;
   /** Card body shown to the admin. */
   question: string;
+  /**
+   * Send a system chat to the agent when the request can't be queued. Default
+   * true, which suits fire-and-forget callers (the delivery-action handlers).
+   * Callers that surface `ApprovalRequestResult` to the agent synchronously —
+   * i.e. the ncl dispatcher — pass false to avoid telling it twice.
+   */
+  notifyOnFailure?: boolean;
 }
+
+/**
+ * Why an approval request never made it to a human. Callers that can answer the
+ * agent synchronously must report this rather than claiming a card was sent —
+ * `no-approver` in particular is a permanent dead end, not a pending wait, and
+ * an agent told "waiting for approval" will report success to its user.
+ */
+export type ApprovalRequestResult =
+  | { queued: true; approvalId: string; approverId: string }
+  | { queued: false; reason: 'no-approver' | 'no-dm-channel' | 'delivery-failed'; detail: string };
 
 /**
  * Queue an approval request. Picks an approver, delivers the card to their
@@ -161,13 +178,18 @@ export interface RequestApprovalOptions {
  * caller's perspective — the admin's response kicks off the registered
  * approval handler for this action via the response dispatcher.
  */
-export async function requestApproval(opts: RequestApprovalOptions): Promise<void> {
-  const { session, action, payload, title, question, agentName } = opts;
+export async function requestApproval(opts: RequestApprovalOptions): Promise<ApprovalRequestResult> {
+  const { session, action, payload, title, question, agentName, notifyOnFailure = true } = opts;
+
+  const fail = (reason: 'no-approver' | 'no-dm-channel' | 'delivery-failed', detail: string): ApprovalRequestResult => {
+    if (notifyOnFailure) notifyAgent(session, `${action} failed: ${detail}`);
+    log.warn('Approval request not queued', { action, reason, agentName, sessionId: session.id });
+    return { queued: false, reason, detail };
+  };
 
   const approvers = pickApprover(session.agent_group_id);
   if (approvers.length === 0) {
-    notifyAgent(session, `${action} failed: no owner or admin configured to approve.`);
-    return;
+    return fail('no-approver', 'no owner or admin configured to approve.');
   }
 
   const originChannelType = session.messaging_group_id
@@ -176,8 +198,7 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
 
   const target = await pickApprovalDelivery(approvers, originChannelType);
   if (!target) {
-    notifyAgent(session, `${action} failed: no DM channel found for any eligible approver.`);
-    return;
+    return fail('no-dm-channel', 'no DM channel found for any eligible approver.');
   }
 
   const approvalId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -211,10 +232,10 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
       );
     } catch (err) {
       log.error('Failed to deliver approval card', { action, approvalId, err });
-      notifyAgent(session, `${action} failed: could not deliver approval request to ${target.userId}.`);
-      return;
+      return fail('delivery-failed', `could not deliver approval request to ${target.userId}.`);
     }
   }
 
   log.info('Approval requested', { action, approvalId, agentName, approver: target.userId });
+  return { queued: true, approvalId, approverId: target.userId };
 }

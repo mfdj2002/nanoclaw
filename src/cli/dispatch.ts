@@ -113,14 +113,31 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
       .map(([k, v]) => `--${k} ${v}`)
       .join(' ');
 
-    await requestApproval({
+    const invocation = `ncl ${req.command}${argSummary ? ' ' + argSummary : ''}`;
+    const result = await requestApproval({
       session,
       agentName,
       action: 'cli_command',
       payload: { frame: { id: req.id, command: req.command, args: req.args } },
       title: `CLI: ${req.command}`,
-      question: `Agent "${agentName}" wants to run:\n\`ncl ${req.command}${argSummary ? ' ' + argSummary : ''}\``,
+      question: `Agent "${agentName}" wants to run:\n\`${invocation}\``,
+      // We answer the agent synchronously below — don't also queue a system chat.
+      notifyOnFailure: false,
     });
+
+    if (!result.queued) {
+      // Reporting "pending" here is what produced the dead end users hit: the
+      // agent tells its user the change is awaiting approval, but no card was
+      // ever delivered and no pending_approvals row exists, so there is nothing
+      // anywhere to approve. Say so, and name the out-of-band route — approving
+      // is deliberately a host-shell action, not something chat can grant.
+      return err(
+        req.id,
+        'approval-unavailable',
+        `Cannot run \`${invocation}\`: ${result.detail} This command is admin-gated, so it was NOT applied and there is no pending request to approve. ` +
+          `Tell the user that an operator must run it themselves in a terminal on the host machine: \`${invocation}\`. Do not describe this as done, queued, or awaiting approval.`,
+      );
+    }
 
     return err(req.id, 'approval-pending', 'Approval request sent to admin. You will be notified of the result.');
   }
