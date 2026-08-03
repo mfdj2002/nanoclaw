@@ -258,11 +258,13 @@ function createAdapter(): ChannelAdapter {
 /** Caps on a single inbound message. The socket is 0600 and local, so this is
  *  bounding accidents (a user dragging in a video) rather than an attacker: the
  *  whole line is already buffered in memory before we see it. */
-const MAX_ATTACHMENTS = 20;
-const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
-/** Headroom over MAX_ATTACHMENT_BYTES for base64 expansion (~4/3) plus JSON
- *  overhead, so a legitimate at-the-limit attachment still gets through. */
-const MAX_LINE_BYTES = 48 * 1024 * 1024;
+/** Overridable so an install that routinely hands over large documents can raise
+ *  them — and so tests can exercise the limits without moving tens of megabytes
+ *  through the socket. Keep MAX_LINE_MB above MAX_ATTACHMENT_MB: base64 inflates
+ *  by ~4/3, and a line at the attachment limit must still fit. */
+const MAX_ATTACHMENTS = Number(process.env.NANOCLAW_OBSIDIAN_MAX_ATTACHMENTS) || 20;
+const MAX_ATTACHMENT_BYTES = (Number(process.env.NANOCLAW_OBSIDIAN_MAX_ATTACHMENT_MB) || 32) * 1024 * 1024;
+const MAX_LINE_BYTES = (Number(process.env.NANOCLAW_OBSIDIAN_MAX_LINE_MB) || 48) * 1024 * 1024;
 
 /**
  * Keep only well-formed `{ name, data }` entries. Filename safety and the write
