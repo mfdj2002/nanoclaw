@@ -79,7 +79,7 @@ export function findByRouting(
  * per-agent-group and changes when the operator renames an agent, while
  * the shared base is identical across all agents.
  */
-export function buildSystemPromptAddendum(assistantName?: string): string {
+export function buildSystemPromptAddendum(assistantName?: string, mountedDirs?: string[]): string {
   const sections: string[] = [];
 
   if (assistantName) {
@@ -87,8 +87,43 @@ export function buildSystemPromptAddendum(assistantName?: string): string {
   }
 
   sections.push(buildDestinationsSection());
+  sections.push(buildFilesSection(mountedDirs));
 
   return sections.join('\n\n');
+}
+
+/**
+ * Where files live, in the agent's own path namespace.
+ *
+ * This has to be spelled out in the prompt rather than left to a provider
+ * option: only the Claude SDK consumes `additionalDirectories`, so under any
+ * other provider a mounted directory is invisible unless the agent is told
+ * about it. The user, meanwhile, sees the *host* path — so the closing rule
+ * matters as much as the paths: never quote a container path back at someone,
+ * because `/workspace/extra/vault/notes.md` means nothing to them.
+ */
+function buildFilesSection(mountedDirs?: string[]): string {
+  const lines = [
+    '## Files',
+    '',
+    '- `/workspace/agent/` — your own workspace. Persists across turns.',
+    '- `/workspace/inbox/<messageId>/` — files the user attached to a message. Each attachment is announced inline in the message as `[type: name — saved to <path>]`; read it from that path.',
+  ];
+
+  if (mountedDirs && mountedDirs.length > 0) {
+    lines.push(
+      `- ${mountedDirs.map((d) => `\`${d}\``).join(', ')} — ${mountedDirs.length === 1 ? 'a directory' : 'directories'} the user mounted for you, holding their own documents. Read from ${mountedDirs.length === 1 ? 'it' : 'them'} freely; write only if asked.`,
+    );
+  }
+
+  lines.push(
+    '',
+    'To hand a file back, use `send_file` — do NOT just write it somewhere and name the path. Your filesystem is not the one the user is looking at, so a file you leave behind is a file they cannot find. `send_file` delivers it to them where they actually are.',
+    '',
+    'Never quote your own absolute paths to the user. Refer to files by name ("the summary I just sent you"), not by location.',
+  );
+
+  return lines.join('\n');
 }
 
 function buildDestinationsSection(): string {

@@ -11,12 +11,22 @@
  * Listens on `data/obsidian.sock` (chmod 0600). Wire format: one JSON object
  * per line, in both directions:
  *
- *   plugin → daemon:  { "threadId": "tab-abc", "text": "user message" }
- *   daemon → plugin:  { "threadId": "tab-abc", "text": "agent reply" }
+ *   plugin → daemon:  { "threadId": "tab-abc", "text": "user message",
+ *                       "attachments": [{ "name": "spec.pdf", "data": "<base64>" }] }
+ *   daemon → plugin:  { "threadId": "tab-abc", "text": "agent reply", "kind": "final",
+ *                       "files": [{ "name": "report.md", "data": "<base64>" }] }
  *
  * `threadId` null/absent collapses to a single default thread. Multiple plugin
  * connections (e.g. two Obsidian windows) are allowed; replies broadcast to all
  * live connections and each demuxes by threadId.
+ *
+ * Attachments and files are optional on both sides. Inbound ones ride the same
+ * path as every other channel's: the router hands `content.attachments` to
+ * `extractAttachmentFiles`, which writes each to `<session>/inbox/<msgId>/` and
+ * rewrites the entry to a `localPath` the agent is told about verbatim. Outbound
+ * ones come from the `send_file` MCP tool via the session outbox; the plugin
+ * writes them into the vault, which is what makes agent-authored files findable
+ * without the user having to know any container path.
  */
 import fs from 'fs';
 import net from 'net';
@@ -97,12 +107,24 @@ function createAdapter(): ChannelAdapter {
     async deliver(platformId, threadId, message: OutboundMessage): Promise<string | undefined> {
       if (platformId !== PLATFORM_ID) return undefined;
       const text = extractText(message);
-      if (text === null) return undefined;
+      // A `send_file` row can carry files with no covering text — deliver it
+      // anyway, or the file silently never reaches the vault.
+      const files = (message.files ?? []).map((f) => ({
+        name: f.filename,
+        data: f.data.toString('base64'),
+      }));
+      if (text === null && files.length === 0) return undefined;
       // Reasoning/progress rows carry { progress: true } in content — tag them so
       // the plugin renders a foldable "thinking" block instead of an answer.
       const content = message.content as Record<string, unknown> | undefined;
       const isThinking = !!content && typeof content === 'object' && content.progress === true;
-      const line = JSON.stringify({ threadId: threadId ?? null, text, kind: isThinking ? 'thinking' : 'final' }) + '\n';
+      const line =
+        JSON.stringify({
+          threadId: threadId ?? null,
+          text: text ?? '',
+          kind: isThinking ? 'thinking' : 'final',
+          ...(files.length > 0 ? { files } : {}),
+        }) + '\n';
       for (const c of clients) {
         try {
           c.write(line);
@@ -132,13 +154,42 @@ function createAdapter(): ChannelAdapter {
     log.info('Obsidian client connected', { clients: clients.size });
 
     let buffer = '';
+    // Set once a line has outgrown MAX_LINE_BYTES: the rest of it is dropped up
+    // to the next newline, then framing resumes. Line framing otherwise lets an
+    // unterminated line grow the buffer without bound — reachable by accident
+    // now that attachments ride this socket (someone drags in a video). Skipping
+    // the line rather than dropping the connection keeps the plugin's in-flight
+    // turn alive, so it fails fast instead of hanging until its turn timeout.
+    let skippingOversizeLine = false;
     socket.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
+
+      if (skippingOversizeLine) {
+        const nl = buffer.indexOf('\n');
+        if (nl < 0) {
+          buffer = '';
+          return;
+        }
+        buffer = buffer.slice(nl + 1);
+        skippingOversizeLine = false;
+      }
+
       let idx: number;
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
         if (line) void handleLine(line, config);
+      }
+
+      // No newline in what's left and it's already too big to ever be valid.
+      if (buffer.length > MAX_LINE_BYTES) {
+        log.warn('Obsidian: line exceeded limit, skipping it', { limit: MAX_LINE_BYTES, buffered: buffer.length });
+        buffer = '';
+        skippingOversizeLine = true;
+        sendLine(
+          null,
+          `⚠ That message was too large to accept (limit ${Math.floor(MAX_LINE_BYTES / 1024 / 1024)}MB) and was dropped.`,
+        );
       }
     });
     socket.on('close', () => {
@@ -149,7 +200,14 @@ function createAdapter(): ChannelAdapter {
   }
 
   async function handleLine(line: string, config: ChannelSetup): Promise<void> {
-    let payload: { type?: unknown; threadId?: unknown; text?: unknown; server?: unknown; spec?: unknown };
+    let payload: {
+      type?: unknown;
+      threadId?: unknown;
+      text?: unknown;
+      server?: unknown;
+      spec?: unknown;
+      attachments?: unknown;
+    };
     try {
       payload = JSON.parse(line);
     } catch {
@@ -170,14 +228,24 @@ function createAdapter(): ChannelAdapter {
       return;
     }
 
-    if (typeof payload.text !== 'string' || payload.text.length === 0) return;
+    const attachments = sanitizeAttachments(payload.attachments);
+
+    // An attachment-only message is legitimate ("look at this"), so require text
+    // only when nothing came with it.
+    const text = typeof payload.text === 'string' ? payload.text : '';
+    if (text.length === 0 && attachments.length === 0) return;
 
     try {
       await config.onInbound(PLATFORM_ID, threadId, {
         id: `obs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         kind: 'chat',
         timestamp: new Date().toISOString(),
-        content: { text: payload.text, sender: 'obsidian', senderId: `obsidian:${PLATFORM_ID}` },
+        content: {
+          text,
+          sender: 'obsidian',
+          senderId: `obsidian:${PLATFORM_ID}`,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
       });
     } catch (err) {
       log.error('Obsidian: onInbound threw', { err });
@@ -185,6 +253,48 @@ function createAdapter(): ChannelAdapter {
   }
 
   return adapter;
+}
+
+/** Caps on a single inbound message. The socket is 0600 and local, so this is
+ *  bounding accidents (a user dragging in a video) rather than an attacker: the
+ *  whole line is already buffered in memory before we see it. */
+const MAX_ATTACHMENTS = 20;
+const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024;
+/** Headroom over MAX_ATTACHMENT_BYTES for base64 expansion (~4/3) plus JSON
+ *  overhead, so a legitimate at-the-limit attachment still gets through. */
+const MAX_LINE_BYTES = 48 * 1024 * 1024;
+
+/**
+ * Keep only well-formed `{ name, data }` entries. Filename safety and the write
+ * itself are the host's job (`extractAttachmentFiles` in session-manager.ts,
+ * which rejects traversal and refuses to follow pre-placed symlinks) — this pass
+ * only drops entries that aren't attachments at all and enforces size limits.
+ */
+function sanitizeAttachments(raw: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const entry of raw) {
+    if (out.length >= MAX_ATTACHMENTS) {
+      log.warn('Obsidian: dropping attachments beyond cap', { cap: MAX_ATTACHMENTS });
+      break;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const att = entry as Record<string, unknown>;
+    if (typeof att.data !== 'string' || att.data.length === 0) continue;
+    // base64 decodes to ~3/4 of its length; check before allocating a Buffer.
+    const approxBytes = Math.floor((att.data.length * 3) / 4);
+    if (approxBytes > MAX_ATTACHMENT_BYTES) {
+      log.warn('Obsidian: attachment too large, dropping', { name: att.name, approxBytes });
+      continue;
+    }
+    out.push({
+      name: typeof att.name === 'string' && att.name ? att.name : 'attachment',
+      data: att.data,
+      size: approxBytes,
+      ...(typeof att.type === 'string' ? { type: att.type } : {}),
+    });
+  }
+  return out;
 }
 
 function extractText(message: OutboundMessage): string | null {

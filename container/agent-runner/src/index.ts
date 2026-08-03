@@ -51,8 +51,6 @@ async function main(): Promise<void> {
   // /workspace/agent/CLAUDE.md — the composed entry imports the shared
   // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
   // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined);
-
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
   const extraBase = '/workspace/extra';
@@ -67,6 +65,11 @@ async function main(): Promise<void> {
       log(`Additional directories: ${additionalDirectories.join(', ')}`);
     }
   }
+
+  // Built after mount discovery so the prompt can name the mounted dirs —
+  // providers other than Claude ignore `additionalDirectories`, so the prompt is
+  // the only place they learn these exist.
+  const instructions = buildSystemPromptAddendum(config.assistantName || undefined, additionalDirectories);
 
   // MCP server path — bun runs TS directly; no tsc build step in-image.
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
