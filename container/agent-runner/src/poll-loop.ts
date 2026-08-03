@@ -18,6 +18,28 @@ import type { AgentProvider, AgentQuery, ProviderEvent } from './providers/types
 const POLL_INTERVAL_MS = 1000;
 const ACTIVE_POLL_INTERVAL_MS = 500;
 
+/** Total attempts per turn, counting the first. Only transient upstream network
+ *  failures are retried — see `isTransientUpstreamError`. */
+const QUERY_MAX_ATTEMPTS = 2;
+const QUERY_RETRY_BACKOFF_MS = 2000;
+
+/**
+ * Does this error mean "the link to the model API broke", as opposed to "the
+ * request was bad"? Only the former is worth re-sending.
+ *
+ * The provider API is reached through the OneCLI proxy, and a request that
+ * sits idle while the model reasons can have its socket reaped by either end.
+ * Bun surfaces that as "The socket connection was closed unexpectedly", which
+ * OpenCode wraps as `Cannot connect to API: ...` and re-raises once its own
+ * internal retries are exhausted.
+ */
+function isTransientUpstreamError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /socket connection was closed|Cannot connect to API|socket hang up|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|502|503|504/i.test(
+    msg,
+  );
+}
+
 function log(msg: string): void {
   console.error(`[poll-loop] ${msg}`);
 }
@@ -167,13 +189,6 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
 
-    const query = config.provider.query({
-      prompt,
-      continuation,
-      cwd: config.cwd,
-      systemContext: config.systemContext,
-    });
-
     // Process the query while concurrently polling for new messages
     const skippedSet = new Set(skipped);
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
@@ -181,32 +196,63 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // can stamp it on outbound rows — needed for a2a return-path routing.
     setCurrentInReplyTo(routing.inReplyTo);
     try {
-      const result = await processQuery(query, routing, processingIds, config.providerName);
-      if (result.continuation && result.continuation !== continuation) {
-        continuation = result.continuation;
-        setContinuation(config.providerName, continuation);
+      // The turn is attempted more than once only for transient upstream
+      // network failures (see isTransientUpstreamError). Everything else — bad
+      // prompts, provider bugs, auth failures — throws on the first attempt, so
+      // we never burn tokens re-running a request that cannot succeed.
+      for (let attempt = 1; ; attempt++) {
+        const query = config.provider.query({
+          prompt,
+          continuation,
+          cwd: config.cwd,
+          systemContext: config.systemContext,
+        });
+        try {
+          const result = await processQuery(query, routing, processingIds, config.providerName);
+          if (result.continuation && result.continuation !== continuation) {
+            continuation = result.continuation;
+            setContinuation(config.providerName, continuation);
+          }
+          break;
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+
+          // Stale/corrupt continuation recovery: ask the provider whether
+          // this error means the stored continuation is unusable, and clear
+          // it so the next attempt starts fresh.
+          if (continuation && config.provider.isSessionInvalid(err)) {
+            log(`Stale session detected (${continuation}) — clearing for next retry`);
+            continuation = undefined;
+            clearContinuation(config.providerName);
+          }
+
+          if (attempt >= QUERY_MAX_ATTEMPTS || !isTransientUpstreamError(err)) throw err;
+
+          // Keep `continuation` as-is when the provider didn't disown it: the
+          // dropped socket was between the provider and the model API, so the
+          // conversation itself is still intact and the retry resumes it.
+          log(`Query attempt ${attempt} hit a transient upstream error (${errMsg}) — retrying`);
+          await sleep(QUERY_RETRY_BACKOFF_MS);
+        }
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       log(`Query error: ${errMsg}`);
 
-      // Stale/corrupt continuation recovery: ask the provider whether
-      // this error means the stored continuation is unusable, and clear
-      // it so the next attempt starts fresh.
-      if (continuation && config.provider.isSessionInvalid(err)) {
-        log(`Stale session detected (${continuation}) — clearing for next retry`);
-        continuation = undefined;
-        clearContinuation(config.providerName);
-      }
-
-      // Write error response so the user knows something went wrong
+      // Write error response so the user knows something went wrong. Transient
+      // network failures get plain language — the raw text ("The socket
+      // connection was closed unexpectedly") reads as a bug in the agent when
+      // it is really the link to the model API, and the fix is to resend.
+      const text = isTransientUpstreamError(err)
+        ? `Couldn't reach the model API — the connection dropped ${QUERY_MAX_ATTEMPTS} times in a row, so this message wasn't processed. Please send it again. (${errMsg})`
+        : `Error: ${errMsg}`;
       writeMessageOut({
         id: generateId(),
         kind: 'chat',
         platform_id: routing.platformId,
         channel_type: routing.channelType,
         thread_id: routing.threadId,
-        content: JSON.stringify({ text: `Error: ${errMsg}` }),
+        content: JSON.stringify({ text }),
       });
     } finally {
       clearCurrentInReplyTo();
