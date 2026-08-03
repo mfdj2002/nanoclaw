@@ -87,11 +87,54 @@ function wrapPromptWithContext(text: string, systemInstructions?: string): strin
   return out;
 }
 
-function buildOpenCodeConfig(options: ProviderOptions): Record<string, unknown> {
-  const provider = process.env.OPENCODE_PROVIDER || 'anthropic';
-  const model = process.env.OPENCODE_MODEL;
-  const smallModel = process.env.OPENCODE_SMALL_MODEL;
-  const proxyUrl = process.env.ANTHROPIC_BASE_URL;
+/**
+ * Base URL for a vendor, or undefined to let OpenCode's own provider registry
+ * supply it (which is the right answer for any vendor it already knows).
+ *
+ * `ANTHROPIC_BASE_URL` is honoured only for the vendor it was configured
+ * alongside. It is a single install-wide value, so a group that switches vendor
+ * would otherwise keep pointing at the previous vendor's host — sending, say, a
+ * Kimi model id to api.deepseek.com and getting an unknown-model error that
+ * looks nothing like a misconfigured base URL.
+ */
+function resolveBaseUrl(provider: string): string | undefined {
+  const suffix = provider.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const perVendor = process.env[`OPENCODE_BASE_URL_${suffix}`];
+  if (perVendor) return perVendor;
+  const envProvider = (process.env.OPENCODE_PROVIDER || 'anthropic').toLowerCase();
+  return provider.toLowerCase() === envProvider ? process.env.ANTHROPIC_BASE_URL : undefined;
+}
+
+/** Vendor prefix of a `vendor/model` id, or undefined for a bare model name. */
+function vendorOf(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  const i = model.indexOf('/');
+  return i > 0 ? model.slice(0, i) : undefined;
+}
+
+/** Exported for tests. */
+export function buildOpenCodeConfig(options: ProviderOptions): Record<string, unknown> {
+  // Per-group model (container_configs.model → container.json → here) beats the
+  // install-wide .env default, so one group can run Kimi while another stays on
+  // DeepSeek. Previously only the env var was read, which made the per-group
+  // model column dead config for this provider.
+  const model = options.model || process.env.OPENCODE_MODEL;
+
+  // A `vendor/model` id carries its own vendor, and that is what makes a
+  // per-group switch possible at all — OPENCODE_PROVIDER is install-wide.
+  const provider = vendorOf(model) || process.env.OPENCODE_PROVIDER || 'anthropic';
+
+  // Ignore the cheap-subtask model when it belongs to a different vendor than
+  // the one we're about to enable; only that vendor is in enabled_providers, so
+  // a mismatched small model would fail to resolve on first use.
+  const envSmallModel = process.env.OPENCODE_SMALL_MODEL;
+  const smallVendor = vendorOf(envSmallModel);
+  const smallModel = !envSmallModel || (smallVendor && smallVendor !== provider) ? undefined : envSmallModel;
+  if (envSmallModel && !smallModel) {
+    log(`Ignoring OPENCODE_SMALL_MODEL=${envSmallModel} — different vendor than ${provider}`);
+  }
+
+  const proxyUrl = resolveBaseUrl(provider);
 
   const providerModelId = model ? model.replace(new RegExp(`^${provider}/`), '') : undefined;
   const providerSmallModelId = smallModel ? smallModel.replace(new RegExp(`^${provider}/`), '') : undefined;
@@ -104,7 +147,12 @@ function buildOpenCodeConfig(options: ProviderOptions): Record<string, unknown> 
       ? {}
       : {
           [provider]: {
-            options: { apiKey: 'placeholder', baseURL: proxyUrl },
+            // The key is a placeholder on purpose: the real credential is
+            // injected by the OneCLI proxy per request, matched on the request's
+            // host. OpenCode only needs *a* key present to consider the provider
+            // usable. `baseURL` is omitted when undefined so OpenCode falls back
+            // to its own registry entry for the vendor.
+            options: { apiKey: 'placeholder', ...(proxyUrl ? { baseURL: proxyUrl } : {}) },
             ...(modelsToRegister.length > 0
               ? {
                   models: Object.fromEntries(
@@ -151,10 +199,13 @@ let sharedRuntime: SharedRuntime | null = null;
 let sharedConfigKey: string | null = null;
 let sharedInit: Promise<SharedRuntime> | null = null;
 
+/** Identity of the spawned server's config. A change here respawns it, so it has
+ *  to cover everything buildOpenCodeConfig reads — including the per-group model,
+ *  which is not an env var. */
 function runtimeConfigKey(options: ProviderOptions): string {
   return JSON.stringify({
     mcp: mcpServersToOpenCodeConfig(options.mcpServers),
-    model: process.env.OPENCODE_MODEL,
+    model: options.model || process.env.OPENCODE_MODEL,
     small: process.env.OPENCODE_SMALL_MODEL,
     op: process.env.OPENCODE_PROVIDER,
   });
@@ -381,6 +432,13 @@ export class OpenCodeProvider implements AgentProvider {
                   st.message
                 ) {
                   self.activeSessionId = undefined;
+                  // Drop the server + SSE stream. The abandoned turn can leave
+                  // queued events (notably a trailing `session.idle`) that the
+                  // next attempt would consume as its own, breaking out of the
+                  // turn loop instantly and yielding an empty answer. Session
+                  // history survives — it lives in the mounted XDG data dir, so
+                  // a respawned server still resolves the same continuation.
+                  destroySharedRuntime();
                   throw new Error(`OpenCode retry limit (${st.attempt}): ${st.message}`);
                 }
                 break;
