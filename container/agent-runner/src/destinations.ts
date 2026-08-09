@@ -93,35 +93,55 @@ export function buildSystemPromptAddendum(assistantName?: string, mountedDirs?: 
 }
 
 /**
- * Where files live, in the agent's own path namespace.
+ * Where files live, in the agent's own path namespace, and which of those
+ * places the user can actually see.
  *
  * This has to be spelled out in the prompt rather than left to a provider
  * option: only the Claude SDK consumes `additionalDirectories`, so under any
  * other provider a mounted directory is invisible unless the agent is told
- * about it. The user, meanwhile, sees the *host* path — so the closing rule
- * matters as much as the paths: never quote a container path back at someone,
- * because `/workspace/extra/vault/notes.md` means nothing to them.
+ * about it.
+ *
+ * The organising idea is that a mounted directory is a *shared* surface, not
+ * just readable input. Work done there is visible to the user as it happens and
+ * editable by both sides, which is what makes iterating on a document possible
+ * at all — the user revises it in their editor, the agent picks the revision up
+ * on the next turn, with one copy and no divergence. Work done anywhere else is
+ * invisible: `/workspace/agent/` is private, and a file handed over with
+ * `send_file` is a snapshot the agent cannot read back.
+ *
+ * So the guidance is conditional. With a shared directory, prefer working in it
+ * and naming files by their path relative to its root (that suffix is what the
+ * user sees in their own file browser). Without one, `send_file` is the only
+ * way to get anything out at all.
  */
 function buildFilesSection(mountedDirs?: string[]): string {
+  const shared = mountedDirs && mountedDirs.length > 0 ? mountedDirs : null;
+
   const lines = [
     '## Files',
     '',
-    '- `/workspace/agent/` — your own workspace. Persists across turns.',
-    '- `/workspace/inbox/<messageId>/` — files the user attached to a message. Each attachment is announced inline in the message as `[type: name — saved to <path>]`; read it from that path.',
+    '- `/workspace/agent/` — your private scratch space. Persists across turns, but the user CANNOT see it. Never leave anything they asked for here.',
+    '- `/workspace/inbox/<messageId>/` — files the user attached to a message. Each is announced inline as `[type: name — saved to <path>]`; read it from that path. These are one-off copies: editing one changes nothing the user can see.',
   ];
 
-  if (mountedDirs && mountedDirs.length > 0) {
+  if (shared) {
     lines.push(
-      `- ${mountedDirs.map((d) => `\`${d}\``).join(', ')} — ${mountedDirs.length === 1 ? 'a directory' : 'directories'} the user mounted for you, holding their own documents. Read from ${mountedDirs.length === 1 ? 'it' : 'them'} freely; write only if asked.`,
+      `- ${shared.map((d) => `\`${d}\``).join(', ')} — shared with the user. You both read and write ${shared.length === 1 ? 'this directory' : 'these directories'}, and they see changes immediately in their own editor.`,
+      '',
+      '**Work in the shared directory for anything the user will read, edit, or come back to.** That is what makes revising possible: they edit your draft in place, you pick up their edits next turn, and there is only ever one copy. Writing to your scratch space instead, or sending a snapshot, breaks that loop — you cannot read back a file you sent.',
+      '',
+      `Refer to files by their path relative to the shared directory — say \`Andy Files/report.md\`, not \`${shared[0]}/Andy Files/report.md\`. The relative part is what the user sees; the prefix is yours alone and means nothing to them.`,
+      '',
+      'Use `send_file` only for a one-off the user just wants handed over, or for something built outside the shared directory.',
+    );
+  } else {
+    lines.push(
+      '',
+      'Nothing you write is visible to the user — no shared directory is mounted. To hand a file over, use `send_file`; do NOT write it somewhere and name the path, because a file you leave behind is a file they cannot find. Note that you cannot read back what you send, so iterating on a document is not possible until a shared directory exists.',
+      '',
+      'Never quote your own absolute paths to the user. Refer to files by name ("the summary I just sent you"), not by location.',
     );
   }
-
-  lines.push(
-    '',
-    'To hand a file back, use `send_file` — do NOT just write it somewhere and name the path. Your filesystem is not the one the user is looking at, so a file you leave behind is a file they cannot find. `send_file` delivers it to them where they actually are.',
-    '',
-    'Never quote your own absolute paths to the user. Refer to files by name ("the summary I just sent you"), not by location.',
-  );
 
   return lines.join('\n');
 }
