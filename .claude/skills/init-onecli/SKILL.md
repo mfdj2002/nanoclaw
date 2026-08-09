@@ -93,7 +93,7 @@ The gateway may take a moment to start after installation. Poll for up to 15 sec
 
 ```bash
 for i in $(seq 1 15); do
-  curl -sf ${ONECLI_URL}/health && break
+  curl -sf ${ONECLI_URL}/api/health && break
   sleep 1
 done
 ```
@@ -104,7 +104,11 @@ If it never becomes healthy, check if the gateway process is running:
 ps aux | grep -i onecli | grep -v grep
 ```
 
-If it's not running, try starting it manually: `onecli start`. If that fails, show the error and stop — the user needs to debug their OneCLI installation.
+If it's not running, start whatever hosts the gateway. Note that the `onecli` CLI cannot
+do this — as of 2.2.0 it only manages agents, secrets, rules, projects and auth, and
+`onecli start` fails with `unexpected argument start`. Check `docker ps -a | grep -i onecli`
+for a container to start, or the OneCLI service/app on the machine. If it still won't come
+up, show the error and stop — the user needs to debug their OneCLI installation.
 
 ## Phase 3: Migrate existing credentials
 
@@ -299,7 +303,7 @@ If an agent uses `git` or `gh`, add to `data/v2-sessions/<agent-group-id>/.claud
 
 ## Troubleshooting
 
-**"OneCLI gateway not reachable" in logs:** The gateway isn't running. Check with `curl -sf ${ONECLI_URL}/health`. Start it with `onecli start` if needed.
+**"OneCLI gateway not reachable" in logs:** The gateway isn't running. Check with `curl -sf ${ONECLI_URL}/api/health` (note `/api/health` — plain `/health` 404s). The `onecli` CLI cannot start it; start the container or service that hosts it.
 
 **Container gets no credentials:** Verify `ONECLI_URL` is set in `.env` and the gateway has an Anthropic secret (`onecli secrets list`).
 

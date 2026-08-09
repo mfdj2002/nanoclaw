@@ -13,7 +13,7 @@ import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
-import { ensureOneCLIRunning } from './onecli-health.js';
+import { checkOneCLIGateway } from './onecli-health.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
@@ -87,9 +87,10 @@ async function main(): Promise<void> {
   ensureContainerRuntimeRunning();
   cleanupOrphans();
 
-  // 2b. Credential gateway. Warns rather than aborts: the sweep retries wakes,
-  // so a gateway that comes up later drains the queue by itself.
-  await ensureOneCLIRunning();
+  // 2b. Credential gateway. Detection only — nanoclaw cannot start it — and a
+  // warning rather than an abort: the sweep retries wakes, so a gateway that
+  // comes up later drains the queue by itself.
+  await checkOneCLIGateway();
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {
