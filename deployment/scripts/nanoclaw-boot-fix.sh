@@ -12,7 +12,12 @@ bad(){  printf '\033[31m  ✗ %s\033[0m\n' "$*"; }
 hr(){   printf '\033[2m──────────────────────────────────────────────\033[0m\n'; }
 
 # ── locate the install ───────────────────────────────────────────────────────
-INSTALL="${NANOCLAW_DIR:-$HOME/nanoclaw}"
+# Derive from this script's own location (deployment/scripts/ -> repo root), the
+# same way every sibling script does. It previously defaulted to $HOME/nanoclaw
+# — a guess at the directory name, and a DIFFERENT guess from the one the
+# Obsidian plugin used, so the two disagreed about where the same install was.
+# The scan below still covers a script copied out of the tree.
+INSTALL="${NANOCLAW_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)}"
 if [ ! -f "$INSTALL/dist/index.js" ]; then
   found="$(find "$HOME" -maxdepth 6 \( -name Library -o -name node_modules -o -name .git \) -prune \
            -o -path '*nanoclaw*/dist/index.js' -print 2>/dev/null | head -1)"
