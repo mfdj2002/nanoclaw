@@ -21,7 +21,7 @@
 # NOT YET exercised (need tokens): channel/register + a live DeepSeek call.
 #
 # Required env:  DEEPSEEK_API_KEY
-# Optional env:  NANOCLAW_DIR (default ./nanoclaw-v2), DEEPSEEK_MODEL (default deepseek-chat),
+# Optional env:  NANOCLAW_DIR (default: the checkout this script lives in), DEEPSEEK_MODEL (default deepseek-chat),
 #                TELEGRAM_BOT_TOKEN, STATE_FILE, LOG_FILE
 #
 # Usage:
