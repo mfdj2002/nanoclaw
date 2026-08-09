@@ -10,7 +10,7 @@ bad()  { printf '\033[31mFAIL\033[0m %s\n' "$1"; FAIL=$((FAIL+1)); }
 phase(){ printf '\n\033[1;36m== %s ==\033[0m\n' "$1"; }
 run()  { "$@" && ok "$*" || bad "$*"; }
 
-NANOCLAW_DIR="$HOME/nanoclaw-v2"
+NANOCLAW_DIR="${NANOCLAW_DIR:-$HOME/nanoclaw-v2}"
 
 phase "Xcode CLT"
 if xcode-select -p >/dev/null 2>&1; then ok "CLT present"; else
