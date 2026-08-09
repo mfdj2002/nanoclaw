@@ -43,7 +43,6 @@ import {
   type ContainerState,
 } from './db/session-db.js';
 import { log } from './log.js';
-import { maybeReapAgedAttachments } from './attachment-cleanup.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
 import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
@@ -138,9 +137,6 @@ async function sweep(): Promise<void> {
     for (const session of sessions) {
       await sweepSession(session);
     }
-    // Self-throttled to hourly — the sweep is just a convenient heartbeat to
-    // hang it off, not a cadence the cleanup needs.
-    maybeReapAgedAttachments();
   } catch (err) {
     log.error('Host sweep error', { err });
   }
