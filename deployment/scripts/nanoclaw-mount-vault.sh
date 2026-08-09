@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 #
-# nanoclaw-mount-vault.sh — mount an Obsidian vault's `workspace/` folder into
-# Andy's container as a writable drop zone (so the agent can save reports/files
-# that show up live in Obsidian).
+# nanoclaw-mount-vault.sh — share one folder of an Obsidian vault with the agent,
+# read-write, so both sides see the same files: you edit in Obsidian, the agent
+# edits in its container, no copies and no divergence.
+#
+# The folder has the SAME name on both sides (default `shared-with-agent`), which
+# the previous `workspace/` → `/workspace/extra/vault` mapping did not — the host
+# called it "workspace" while the container called it "vault", and "workspace"
+# already means the session root inside the container. Override with SHARED_DIR.
 #
 #   nanoclaw-mount-vault.sh                 # AUTODETECT the vault (the one with the
 #                                           #   nanoclaw-chat plugin installed)
@@ -10,11 +15,12 @@
 #
 # What it does (idempotent — safe to re-run):
 #   1. Find the vault root deterministically from the plugin's install path.
-#   2. mkdir -p "<vault>/workspace".
-#   3. Register "<vault>/workspace" as an allowed RW root in the mount allowlist.
-#   4. Set the group's additional_mounts so <vault>/workspace → /workspace/extra/vault
-#      inside the container (the /workspace/extra/ prefix is forced by the mount
-#      validator; there is no ncl verb for additional_mounts, so we write the DB).
+#   2. mkdir -p "<vault>/<SHARED_DIR>".
+#   3. Register it as an allowed RW root in the mount allowlist.
+#   4. Set the group's additional_mounts so <vault>/<SHARED_DIR> →
+#      /workspace/extra/<SHARED_DIR> in the container (the /workspace/extra/
+#      prefix is forced by the mount validator; there is no ncl verb for
+#      additional_mounts, so we write the DB).
 #   5. Restart the host daemon (reloads the cached allowlist) + the container.
 #
 set -euo pipefail
@@ -25,11 +31,15 @@ set -euo pipefail
 _self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIR="${NANOCLAW_DIR:-$(cd "$_self/../.." && pwd)}"
 ALLOWLIST="$HOME/.config/nanoclaw/mount-allowlist.json"
-CONTAINER_SUBDIR="vault"                                    # → /workspace/extra/vault
+# One name, both sides — nothing to translate when the agent names a file.
+SHARED_DIR="${SHARED_DIR:-shared-with-agent}"
+CONTAINER_SUBDIR="$SHARED_DIR"                              # → /workspace/extra/<SHARED_DIR>
 export PATH="$HOME/.local/bin:$PATH"
 # Autodetect the obsidian/CLI agent group (the cli-with-* group wire-obsidian.ts targets)
 # rather than hardcoding an install-specific id. Override with NANOCLAW_GROUP_ID.
-GROUP_ID="${NANOCLAW_GROUP_ID:-$(ncl groups list 2>/dev/null | awk '/cli-with/{print $1; exit}')}"
+# First agent group, not one whose name happens to contain "cli-with" — that is
+# one install's naming convention and matches nothing elsewhere.
+GROUP_ID="${NANOCLAW_GROUP_ID:-$(ncl groups list 2>/dev/null | awk 'NR>1 && $1 ~ /^ag-/ {print $1; exit}')}"
 [ -n "$GROUP_ID" ] || { echo "Could not find an agent group (set NANOCLAW_GROUP_ID)." >&2; exit 1; }
 
 [ -d "$DIR" ] || { echo "nanoclaw dir not found: $DIR" >&2; exit 1; }
@@ -37,17 +47,23 @@ GROUP_ID="${NANOCLAW_GROUP_ID:-$(ncl groups list 2>/dev/null | awk '/cli-with/{p
 # ── 1. Autodetect the vault root from the plugin's install location ──
 VAULT="${1:-}"
 if [ -z "$VAULT" ]; then
-  PLUGIN_MAIN=$(find "$HOME" -maxdepth 7 -path '*/.obsidian/plugins/nanoclaw-chat/main.js' -print -quit 2>/dev/null || true)
-  [ -n "$PLUGIN_MAIN" ] || { echo "Could not autodetect a vault (no nanoclaw-chat plugin found under \$HOME). Pass the vault root explicitly." >&2; exit 1; }
-  VAULT="${PLUGIN_MAIN%/.obsidian/plugins/nanoclaw-chat/main.js}"
+  # Match the plugin by its manifest id, not by its directory name — the folder
+  # can be called anything (nanoclaw-obsidian, nanoclaw-chat, …) and a name-based
+  # find silently reports "no vault" on a perfectly good install.
+  MANIFEST=$(grep -rl '"id"[[:space:]]*:[[:space:]]*"nanoclaw-chat"' \
+             "$HOME"/*/.obsidian/plugins/*/manifest.json \
+             "$HOME"/*/*/.obsidian/plugins/*/manifest.json \
+             "$HOME"/*/*/*/.obsidian/plugins/*/manifest.json 2>/dev/null | head -1 || true)
+  [ -n "$MANIFEST" ] || { echo "Could not autodetect a vault (no nanoclaw plugin found under \$HOME). Pass the vault root explicitly." >&2; exit 1; }
+  VAULT="${MANIFEST%/.obsidian/plugins/*/manifest.json}"
 fi
 [ -d "$VAULT/.obsidian" ] || { echo "Not an Obsidian vault (no .obsidian/): $VAULT" >&2; exit 1; }
 echo "vault root      : $VAULT"
 
 # ── 2. Ensure the workspace drop folder exists (validator rejects missing paths) ──
-WS="$VAULT/workspace"
+WS="$VAULT/$SHARED_DIR"
 mkdir -p "$WS"
-echo "workspace folder: $WS"
+echo "shared folder   : $WS"
 
 # ── 3. Register the allowlist root (RW), idempotently ──
 mkdir -p "$(dirname "$ALLOWLIST")"
@@ -59,7 +75,7 @@ ALLOWLIST="$ALLOWLIST" WS="$WS" pnpm exec tsx -e '
   a.allowedRoots = a.allowedRoots || [];
   a.blockedPatterns = a.blockedPatterns || [];
   if (!a.allowedRoots.some((r: any) => r.path === ws))
-    a.allowedRoots.push({ path: ws, allowReadWrite: true, description: "Obsidian vault workspace drop zone" });
+    a.allowedRoots.push({ path: ws, allowReadWrite: true, description: "Shared with the agent (Obsidian vault)" });
   fs.writeFileSync(p, JSON.stringify(a, null, 2) + "\n");
   console.log("allowlist roots :", a.allowedRoots.map((r: any) => r.path).join(", "));
 '
@@ -89,4 +105,4 @@ ncl groups restart --id "$GROUP_ID" >/dev/null 2>&1 \
 echo
 echo "DONE."
 echo "  host : $WS"
-echo "  cont : /workspace/extra/vault   (writable)"
+echo "  cont : /workspace/extra/$SHARED_DIR   (writable)"
